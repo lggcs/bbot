@@ -111,9 +111,9 @@ class DNSEngine(EngineServer):
         """
         results = set()
         try:
-            answers, errors = await self.resolve_raw(query, **kwargs)
-            for answer in answers:
-                for _, host in extract_targets(answer):
+            answers_text, errors_text = await self.resolve_raw(query, **kwargs)
+            for answer_text in answers_text:
+                for _, host in extract_targets(answer_text):
                     results.add(host)
         except BaseException:
             self.log.trace(f"Caught exception in resolve({query}, {kwargs}):")
@@ -158,9 +158,22 @@ class DNSEngine(EngineServer):
             kwargs.pop("rdtype", None)
             rdtype = kwargs.pop("type", "A")
             if is_ip(query):
-                return await self._resolve_ip(query, **kwargs)
+                answers, errors = await self._resolve_ip(query, **kwargs)
             else:
-                return await self._resolve_hostname(query, rdtype=rdtype, **kwargs)
+                answers, errors = await self._resolve_hostname(query, rdtype=rdtype, **kwargs)
+            # normalize to primitives
+            answers_text = []
+            for ans in answers or []:
+                try:
+                    for rdata in ans:
+                        answers_text.append(rdata.to_text())
+                except TypeError:
+                    if hasattr(ans, "to_text"):
+                        answers_text.append(ans.to_text())
+                    else:
+                        answers_text.append(str(ans))
+            errors_text = [str(e) for e in (errors or [])]
+            return answers_text, errors_text
         except BaseException:
             self.log.trace(f"Caught exception in resolve_raw({query}, {kwargs}):")
             self.log.trace(traceback.format_exc())
@@ -353,12 +366,12 @@ class DNSEngine(EngineServer):
 
     async def resolve_raw_batch(self, queries, threads=10, **kwargs):
         queries_kwargs = [[q[0], {"type": q[1]}] for q in queries]
-        async for (args, kwargs, _), (answers, errors) in self.task_pool(
+        async for (args, kwargs, _), (answers_text, errors_text) in self.task_pool(
             self.resolve_raw, args_kwargs=queries_kwargs, threads=threads, global_kwargs=kwargs
         ):
             query = args[0]
             rdtype = kwargs["type"]
-            yield ((query, rdtype), (answers, errors))
+            yield ((query, rdtype), (answers_text, errors_text))
 
     async def _catch(self, callback, *args, **kwargs):
         """
@@ -434,15 +447,14 @@ class DNSEngine(EngineServer):
         if raw_dns_records is None:
             raw_dns_records = {}
             queries = [(query, rdtype) for rdtype in rdtypes]
-            async for (_, rdtype), (answers, errors) in self.resolve_raw_batch(queries):
-                if answers:
-                    for answer in answers:
-                        try:
-                            raw_dns_records[rdtype].add(answer)
-                        except KeyError:
-                            raw_dns_records[rdtype] = {answer}
+            async for (_, rdtype), (answers_text, errors_text) in self.resolve_raw_batch(queries):
+                if answers_text:
+                    try:
+                        raw_dns_records[rdtype].update(answers_text)
+                    except KeyError:
+                        raw_dns_records[rdtype] = set(answers_text)
                 else:
-                    if errors:
+                    if errors_text:
                         self.debug(f"Failed to resolve {query} ({rdtype}) during wildcard detection")
                         result[rdtype] = ("ERROR", query)
 
@@ -450,17 +462,10 @@ class DNSEngine(EngineServer):
         baseline = {}
         baseline_raw = {}
         for rdtype, answers in raw_dns_records.items():
-            for answer in answers:
-                text_answer = answer.to_text()
-                try:
-                    baseline_raw[rdtype].add(text_answer)
-                except KeyError:
-                    baseline_raw[rdtype] = {text_answer}
-                for _, host in extract_targets(answer):
-                    try:
-                        baseline[rdtype].add(host)
-                    except KeyError:
-                        baseline[rdtype] = {host}
+            for text_answer in answers:
+                baseline_raw.setdefault(rdtype, set()).add(text_answer)
+                for _, host in extract_targets(text_answer):
+                    baseline.setdefault(rdtype, set()).add(host)
 
         # if it's unresolved, it's a big nope
         if not raw_dns_records:

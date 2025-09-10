@@ -1,4 +1,5 @@
 import logging
+import ipaddress
 
 from bbot.core.helpers.regexes import dns_name_extraction_regex
 from bbot.core.helpers.misc import clean_dns_record, smart_decode
@@ -185,27 +186,39 @@ def extract_targets(record):
         cleaned = clean_dns_record(_record)
         if cleaned:
             results.add((rdtype, cleaned))
-
-    rdtype = str(record.rdtype.name).upper()
-    if rdtype in ("A", "AAAA", "NS", "CNAME", "PTR"):
-        add_result(rdtype, record)
-    elif rdtype == "SOA":
-        add_result(rdtype, record.mname)
-    elif rdtype == "MX":
-        add_result(rdtype, record.exchange)
-    elif rdtype == "SRV":
-        add_result(rdtype, record.target)
-    elif rdtype == "TXT":
-        for s in record.strings:
-            s = smart_decode(s)
-            for match in dns_name_extraction_regex.finditer(s):
-                start, end = match.span()
-                host = s[start:end]
-                add_result(rdtype, host)
-    elif rdtype == "NSEC":
-        add_result(rdtype, record.next)
-    else:
-        log.warning(f'Unknown DNS record type "{rdtype}"')
+    # Case 1: dnspython Rdata object
+    if hasattr(record, "rdtype"):
+        rdtype = str(record.rdtype.name).upper()
+        if rdtype in ("A", "AAAA", "NS", "CNAME", "PTR"):
+            add_result(rdtype, record)
+        elif rdtype == "SOA":
+            add_result(rdtype, record.mname)
+        elif rdtype == "MX":
+            add_result(rdtype, record.exchange)
+        elif rdtype == "SRV":
+            add_result(rdtype, record.target)
+        elif rdtype == "TXT":
+            for s in record.strings:
+                s = smart_decode(s)
+                for match in dns_name_extraction_regex.finditer(s):
+                    start, end = match.span()
+                    host = s[start:end]
+                    add_result(rdtype, host)
+        elif rdtype == "NSEC":
+            add_result(rdtype, record.next)
+        else:
+            log.warning(f'Unknown DNS record type "{rdtype}"')
+        return results
+    # Case 2: plain string
+    if isinstance(record, str):
+        try:
+            ipaddress.ip_address(record)
+            add_result("A", record)
+        except ValueError:
+            add_result("CNAME", record)
+        return results
+    # Fallback
+    add_result("UNKNOWN", str(record))
     return results
 
 

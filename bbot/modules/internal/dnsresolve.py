@@ -251,38 +251,26 @@ class DNSResolve(BaseInterceptModule):
         event_host = str(event.host)
         queries = [(event_host, rdtype) for rdtype in types]
         dns_errors = {}
-        async for (query, rdtype), (answers, errors) in self.helpers.dns.resolve_raw_batch(queries):
-            # errors
+
+        async for (query, rdtype), (answers_text, errors_text) in self.helpers.dns.resolve_raw_batch(queries):
             try:
-                dns_errors[rdtype].update(errors)
-            except KeyError:
-                dns_errors[rdtype] = set(errors)
-            for answer in answers:
+                dns_errors.setdefault(rdtype, set()).update(errors_text)
+            except Exception:
+                pass
+
+            for answer_text in answers_text:
                 event.add_tag(f"{rdtype}-record")
-                # raw dnspython answers
-                try:
-                    event.raw_dns_records[rdtype].add(answer)
-                except KeyError:
-                    event.raw_dns_records[rdtype] = {answer}
-                # hosts
-                for _rdtype, host in extract_targets(answer):
-                    try:
-                        event.dns_children[_rdtype].add(host)
-                    except KeyError:
-                        event.dns_children[_rdtype] = {host}
+                event.raw_dns_records.setdefault(rdtype, set()).add(answer_text)
+
+                # extract hosts from the string answer
+                for _rdtype, host in extract_targets(answer_text):
+                    event.dns_children.setdefault(_rdtype, set()).add(host)
+
                     # check for private IPs
-                    try:
+                    with suppress(ValueError):
                         ip = ipaddress.ip_address(host)
                         if ip.is_private:
                             event.add_tag("private-ip")
-                    except ValueError:
-                        continue
-
-        # tag event with errors
-        for rdtype, errors in dns_errors.items():
-            # only consider it an error if there weren't any results for that rdtype
-            if errors and rdtype not in event.dns_children:
-                event.add_tag(f"{rdtype}-error")
 
     def get_dns_parent(self, event):
         """

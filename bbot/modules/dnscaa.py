@@ -84,7 +84,8 @@ class dnscaa(BaseModule):
             raw_results, errors = r
 
             for answer in raw_results:
-                s = answer.to_text().strip().replace('" "', "")
+                s = (answer.to_text() if hasattr(answer, "to_text") else str(answer)).strip().replace('" "', "")
+
 
                 # validate CAA record vi regex so that we can determine what to do with it.
                 caa_match = caa_regex.search(s)

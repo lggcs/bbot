@@ -104,7 +104,7 @@ class dnsbimi(BaseModule):
                             {
                                 "host": hostname,
                                 "type": rdtype,
-                                "answer": answer.to_text(),
+                                "answer": answer.to_text() if hasattr(answer, "to_text") else str(answer),
                             },
                             "RAW_DNS_RECORD",
                             parent=event,
@@ -115,7 +115,7 @@ class dnsbimi(BaseModule):
                     # we need to strip surrounding quotes and whitespace, as well as fix TXT data that may have been split across two different rdata's
                     # e.g. we will get a single string, but within that string we may have two parts such as:
                     # answer = '"part 1 that was really long" "part 2 that did not fit in part 1"'
-                    s = answer.to_text().strip('"').strip().replace('" "', "")
+                    s = (answer.to_text() if hasattr(answer, "to_text") else str(answer)).strip('"').strip().replace('" "', "")
 
                     bimi_match = bimi_regex.search(s)
 

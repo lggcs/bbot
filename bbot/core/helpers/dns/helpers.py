@@ -163,7 +163,7 @@ def extract_targets(record):
       - dnspython Rdata objects (original behavior)
       - Plain string records (post-engine patch)
       - SOA strings split into primary NS and responsible party
-      - Skips numeric fields (serials, TTLs, etc.)
+      - Skips numeric fields and TXT verification strings (key=value)
     """
     results = set()
 
@@ -188,7 +188,12 @@ def extract_targets(record):
             for s in record.strings:
                 s = smart_decode(s)
                 for match in dns_name_extraction_regex.finditer(s):
-                    host = s[match.start():match.end()]
+                    host = s[match.start():match.end()].strip('"')
+                    # Skip obvious non-hostname TXT payloads
+                    if "=" in host:
+                        continue
+                    if not host.replace('.', '').isalnum():
+                        continue
                     add_result(rdtype, host)
         elif rdtype == "NSEC":
             add_result(rdtype, record.next)
@@ -206,14 +211,19 @@ def extract_targets(record):
 
         # Single token: treat as generic DNS_NAME
         elif len(parts) == 1:
-            add_result("DNS_NAME", parts[0].rstrip('.'))
+            token = parts[0].strip('"')
+            if "=" not in token and token.replace('.', '').isalnum():
+                add_result("DNS_NAME", token.rstrip('.'))
 
         else:
-            # Extract hostnames from multi-field string, skip pure numbers
+            # Extract hostnames from multi-field string, skip pure numbers and key=value
             for match in dns_name_extraction_regex.finditer(record):
-                host = record[match.start():match.end()]
-                if not host.replace('.', '').isdigit():
-                    add_result("DNS_NAME", host.rstrip('.'))
+                host = record[match.start():match.end()].strip('"')
+                if "=" in host:
+                    continue
+                if not host.replace('.', '').isalnum():
+                    continue
+                add_result("DNS_NAME", host.rstrip('.'))
 
     return results
 

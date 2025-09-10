@@ -592,21 +592,26 @@ class DNSEngine(EngineServer):
                     rand_queries.append((rand_query, rdtype))
 
                 async for (query, rdtype), (answers, errors) in self.resolve_raw_batch(rand_queries, use_cache=False):
+
                     for answer in answers:
                         # consider both the raw record
-                        wildcard_results_raw.add(answer.to_text())
-                        # and all the extracted hosts
-                        for _, t in extract_targets(answer):
+                        if hasattr(answer, "to_text"):
+                            wildcard_results_raw.add(answer.to_text())
+                        else:
+                            wildcard_results_raw.add(str(answer))
+                       # and all the extracted hosts
+                       for _, t in extract_targets(answer):
                             wildcard_results.add(t)
 
-                if wildcard_results:
-                    self.log.info(f"Encountered domain with wildcard DNS ({rdtype}): *.{host}")
-                else:
-                    self.debug(f"Finished checking {host}:{rdtype}, it is not a wildcard")
-                self._wildcard_cache[host_hash] = wildcard_results, wildcard_results_raw
+                    if wildcard_results:
+                       self.log.info(f"Encountered domain with wildcard DNS ({rdtype}): *.{host}")
+                    else:
+                       self.debug(f"Finished checking {host}:{rdtype}, it is not a wildcard")
 
-        return wildcard_results, wildcard_results_raw
+                    self._wildcard_cache[host_hash] = wildcard_results, wildcard_results_raw
 
+                    return wildcard_results, wildcard_results_raw
+'
     async def _is_wildcard(self, query, rdtypes, dns_children):
         if isinstance(rdtypes, str):
             rdtypes = [rdtypes]

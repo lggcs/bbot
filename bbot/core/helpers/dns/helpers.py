@@ -157,28 +157,13 @@ common_srvs = [
 
 def extract_targets(record):
     """
-    Extracts hostnames or IP addresses from a given DNS record.
+    Extract hostnames or IP addresses from a DNS record (Rdata object or string).
 
-    This method reads the DNS record's type and based on that, extracts the target
-    hostnames or IP addresses it points to. The type of DNS record
-    (e.g., "A", "MX", "CNAME", etc.) determines which fields are used for extraction.
-
-    Args:
-        record (dns.rdata.Rdata): The DNS record to extract information from.
-
-    Returns:
-        set: A set of tuples, each containing the DNS record type and the extracted value.
-
-    Examples:
-        >>> from dns.rrset import from_text
-        >>> record = from_text('www.example.com', 3600, 'IN', 'A', '192.0.2.1')
-        >>> extract_targets(record[0])
-        {('A', '192.0.2.1')}
-
-        >>> record = from_text('example.com', 3600, 'IN', 'MX', '10 mail.example.com.')
-        >>> extract_targets(record[0])
-        {('MX', 'mail.example.com')}
-
+    Handles:
+      - dnspython Rdata objects (original behavior)
+      - Plain string records (post-engine patch)
+      - SOA strings split into primary NS and responsible party
+      - Skips numeric fields (serials, TTLs, etc.)
     """
     results = set()
 
@@ -186,6 +171,7 @@ def extract_targets(record):
         cleaned = clean_dns_record(_record)
         if cleaned:
             results.add((rdtype, cleaned))
+
     # Case 1: dnspython Rdata object
     if hasattr(record, "rdtype"):
         rdtype = str(record.rdtype.name).upper()
@@ -193,6 +179,7 @@ def extract_targets(record):
             add_result(rdtype, record)
         elif rdtype == "SOA":
             add_result(rdtype, record.mname)
+            add_result(rdtype, record.rname)
         elif rdtype == "MX":
             add_result(rdtype, record.exchange)
         elif rdtype == "SRV":
@@ -201,26 +188,34 @@ def extract_targets(record):
             for s in record.strings:
                 s = smart_decode(s)
                 for match in dns_name_extraction_regex.finditer(s):
-                    start, end = match.span()
-                    host = s[start:end]
+                    host = s[match.start():match.end()]
                     add_result(rdtype, host)
         elif rdtype == "NSEC":
             add_result(rdtype, record.next)
         else:
             log.warning(f'Unknown DNS record type "{rdtype}"')
-        return results
-    # Case 2: plain string
-    if isinstance(record, str):
-        try:
-            ipaddress.ip_address(record)
-            add_result("A", record)
-        except ValueError:
-            add_result("CNAME", record)
-        return results
-    # Fallback
-    add_result("UNKNOWN", str(record))
-    return results
 
+    # Case 2: plain string
+    elif isinstance(record, str):
+        parts = record.strip().split()
+
+        # Detect SOA-like string: >= 2 hostnames followed by numeric fields
+        if len(parts) >= 2 and any(p.replace('.', '').isdigit() for p in parts[2:]):
+            add_result("SOA", parts[0].rstrip('.'))
+            add_result("SOA", parts[1].rstrip('.'))
+
+        # Single token: treat as generic DNS_NAME
+        elif len(parts) == 1:
+            add_result("DNS_NAME", parts[0].rstrip('.'))
+
+        else:
+            # Extract hostnames from multi-field string, skip pure numbers
+            for match in dns_name_extraction_regex.finditer(record):
+                host = record[match.start():match.end()]
+                if not host.replace('.', '').isdigit():
+                    add_result("DNS_NAME", host.rstrip('.'))
+
+    return results
 
 def service_record(host, rdtype=None):
     """

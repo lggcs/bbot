@@ -567,54 +567,53 @@ class DNSEngine(EngineServer):
         return wildcard_results
 
     async def _is_wildcard_zone(self, host, rdtype):
-        """
-        Check whether a specific DNS zone+rdtype has a wildcard configuration
-        """
-        rdtype = rdtype.upper()
+      """
+      Check whether a specific DNS zone+rdtype has a wildcard configuration.
+      Always returns a tuple: (wildcard_results, wildcard_results_raw)
+      """
+      rdtype = rdtype.upper()
 
-        # have we checked this host before?
-        host_hash = hash((host, rdtype))
-        async with self._wildcard_lock.lock(host_hash):
-            # if we've seen this host before
-            try:
-                wildcard_results, wildcard_results_raw = self._wildcard_cache[host_hash]
-                self.debug(f"Got {host}:{rdtype} from cache")
-            except KeyError:
-                wildcard_results = set()
-                wildcard_results_raw = set()
-                self.debug(f"Checking if {host}:{rdtype} is a wildcard")
+      # have we checked this host before?
+      host_hash = hash((host, rdtype))
+      async with self._wildcard_lock.lock(host_hash):
+          try:
+              # if we've seen this host before
+              wildcard_results, wildcard_results_raw = self._wildcard_cache[host_hash]
+              self.debug(f"Got {host}:{rdtype} from cache")
+              return wildcard_results, wildcard_results_raw
+          except KeyError:
+              wildcard_results = set()
+              wildcard_results_raw = set()
+              self.debug(f"Checking if {host}:{rdtype} is a wildcard")
 
-                # determine if this is a wildcard domain
-                # resolve a bunch of random subdomains of the same parent
-                rand_queries = []
-                for _ in range(self.wildcard_tests):
-                    rand_query = f"{rand_string(digits=False, length=10)}.{host}"
-                    rand_queries.append((rand_query, rdtype))
+              # determine if this is a wildcard domain
+              # resolve a bunch of random subdomains of the same parent
+              rand_queries = []
+              for _ in range(self.wildcard_tests):
+                  rand_query = f"{rand_string(digits=False, length=10)}.{host}"
+                  rand_queries.append((rand_query, rdtype))
 
-                async for (query, rdtype), (answers, errors) in self.resolve_raw_batch(rand_queries, use_cache=False):
+              async for (query, rdtype), (answers, errors) in self.resolve_raw_batch(rand_queries, use_cache=False):
+                  for answer in answers:
+                      # consider both the raw record
+                      if hasattr(answer, "to_text"):
+                          wildcard_results_raw.add(answer.to_text())
+                      else:
+                          wildcard_results_raw.add(str(answer))
+                      # and all the extracted hosts
+                      for _, t in extract_targets(answer):
+                          wildcard_results.add(t)
 
-                    for answer in answers:
-                        # consider both the raw record
-                        if hasattr(answer, "to_text"):
-                            wildcard_results_raw.add(answer.to_text())
-                        else:
-                            wildcard_results_raw.add(str(answer))
-                        # and all the extracted hosts
-                        for _, t in extract_targets(answer):
-                            wildcard_results.add(t)
+              if wildcard_results:
+                  self.log.info(f"Encountered domain with wildcard DNS ({rdtype}): *.{host}")
+              else:
+                  self.debug(f"Finished checking {host}:{rdtype}, it is not a wildcard")
 
-                    if wildcard_results:
-                       self.log.info(f"Encountered domain with wildcard DNS ({rdtype}): *.{host}")
-                    else:
-                       self.debug(f"Finished checking {host}:{rdtype}, it is not a wildcard")
+              # cache the result
+              self._wildcard_cache[host_hash] = (wildcard_results, wildcard_results_raw)
 
-                    self._wildcard_cache[host_hash] = wildcard_results, wildcard_results_raw
-
-                    return wildcard_results, wildcard_results_raw
-
-    async def _is_wildcard(self, query, rdtypes, dns_children):
-        if isinstance(rdtypes, str):
-            rdtypes = [rdtypes]
+              # always return a tuple, even if empty
+              return wildcard_results, wildcard_results_raw
 
     @property
     def dns_connectivity_lock(self):
